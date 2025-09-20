@@ -1,0 +1,15 @@
+{
+  "profiles": {
+    "sharpmote": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "launchBrowser": false,
+      "applicationUrl": "http://0.0.0.0:8080",
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "SHARPMOTE_BIND_ADDRESS": "0.0.0.0",
+        "SHARPMOTE_HTTP_PORT": "8080"
+      }
+    }
+  }
+}

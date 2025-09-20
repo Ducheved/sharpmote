@@ -1,0 +1,138 @@
+openapi: 3.0.3
+info:
+  title: sharpmote API
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+paths:
+  /api/v1/state:
+    get:
+      summary: Get player and volume state
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200':
+          description: State
+        '409':
+          description: No active media session
+  /api/v1/play:
+    post:
+      summary: Play
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: Ok }
+  /api/v1/pause:
+    post:
+      summary: Pause
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: Ok }
+  /api/v1/toggle:
+    post:
+      summary: Toggle Play/Pause
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: Ok }
+  /api/v1/next:
+    post:
+      summary: Next track
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: Ok }
+  /api/v1/prev:
+    post:
+      summary: Previous track
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: Ok }
+  /api/v1/stop:
+    post:
+      summary: Stop
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: Ok }
+  /api/v1/volume/step:
+    post:
+      summary: Volume step
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                delta: { type: number }
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: Ok }
+  /api/v1/volume/set:
+    post:
+      summary: Set absolute volume
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                level: { type: number }
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: Ok }
+  /api/v1/volume/mute:
+    post:
+      summary: Toggle mute
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+          required: true
+      responses:
+        '200': { description: Ok }
+  /events:
+    get:
+      summary: Server-Sent Events stream
+      parameters:
+        - in: header
+          name: X-Api-Key
+          schema: { type: string }
+        - in: query
+          name: api_key
+          schema: { type: string }
+      responses:
+        '200': { description: Event stream }
