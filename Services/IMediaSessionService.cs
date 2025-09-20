@@ -13,4 +13,5 @@ public interface IMediaSessionService
     Task NextAsync(CancellationToken ct);
     Task PreviousAsync(CancellationToken ct);
     Task StopPlaybackAsync(CancellationToken ct);
+    Task<(Stream stream, string contentType)?> GetAlbumArtAsync(CancellationToken ct);
 }

@@ -7,6 +7,7 @@ using Telegram.Bot;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
+using Telegram.Bot.Exceptions;
 
 namespace Sharpmote.App.Connectors.TelegramBot;
 
@@ -18,6 +19,7 @@ public class TelegramHostedService : BackgroundService
     readonly IVolumeService _volume;
     readonly ITelegramBotClient _bot;
     readonly HashSet<long> _allowed;
+    readonly Dictionary<long, int> _lastMessageByChat = new();
     int _lastUpdateId;
 
     public TelegramHostedService(ILogger<TelegramHostedService> logger, IConfiguration cfg, IMediaSessionService media, IVolumeService volume)
@@ -36,9 +38,7 @@ public class TelegramHostedService : BackgroundService
         var set = new HashSet<long>();
         if (string.IsNullOrWhiteSpace(csv)) return set;
         foreach (var part in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
             if (long.TryParse(part, out var id)) set.Add(id);
-        }
         return set;
     }
 
@@ -46,9 +46,7 @@ public class TelegramHostedService : BackgroundService
     {
         var webhookSecret = _cfg["SHARPMOTE_TELEGRAM_WEBHOOK_SECRET"];
         if (!string.IsNullOrWhiteSpace(webhookSecret))
-        {
             return;
-        }
         var delay = TimeSpan.FromSeconds(1);
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -62,10 +60,7 @@ public class TelegramHostedService : BackgroundService
                 }
                 delay = TimeSpan.FromMilliseconds(100);
             }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "telegram_poll_error");
@@ -89,17 +84,17 @@ public class TelegramHostedService : BackgroundService
     async Task ProcessUpdateAsync(Update update, CancellationToken ct)
     {
         if (update.Type != UpdateType.Message && update.Type != UpdateType.CallbackQuery) return;
+
         if (update.Message != null)
         {
             var chatId = update.Message.Chat.Id;
             var userId = update.Message.From?.Id ?? 0;
             if (_allowed.Count > 0 && !_allowed.Contains(userId) && !_allowed.Contains(chatId))
-            {
-                await _bot.SendTextMessageAsync(chatId, "forbidden", cancellationToken: ct);
                 return;
-            }
-            var cmd = TelegramCommandParser.Parse(update.Message.Text);
-            await HandleCommand(cmd, chatId, ct);
+
+            var text = update.Message.Text ?? "";
+            await HandleCommand(text, chatId, ct);
+            await UpsertMessage(chatId, ct);
         }
         else if (update.CallbackQuery != null)
         {
@@ -111,14 +106,20 @@ public class TelegramHostedService : BackgroundService
                 return;
             }
             var data = update.CallbackQuery.Data ?? "";
-            var cmd = TelegramCommandParser.Parse(data);
-            await HandleCommand(cmd, chatId, ct);
+            if (!string.Equals(data, "/refresh", StringComparison.OrdinalIgnoreCase))
+                await HandleCommand(data, chatId, ct);
+            _lastMessageByChat[chatId] = update.CallbackQuery.Message.MessageId;
+            await UpsertMessage(chatId, ct);
             await _bot.AnswerCallbackQueryAsync(update.CallbackQuery.Id, cancellationToken: ct);
         }
     }
 
-    async Task HandleCommand(TelegramCommand cmd, long chatId, CancellationToken ct)
+    async Task HandleCommand(string raw, long chatId, CancellationToken ct)
     {
+        if (string.Equals(raw?.Trim(), "/refresh", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var cmd = TelegramCommandParser.Parse(raw);
         if (cmd.Kind == TelegramCommandKind.Play) await _media.PlayAsync(ct);
         else if (cmd.Kind == TelegramCommandKind.Pause) await _media.PauseAsync(ct);
         else if (cmd.Kind == TelegramCommandKind.Toggle) await _media.TogglePlayPauseAsync(ct);
@@ -129,26 +130,37 @@ public class TelegramHostedService : BackgroundService
         else if (cmd.Kind == TelegramCommandKind.VolDown) await _volume.StepAsync(-0.05f, ct);
         else if (cmd.Kind == TelegramCommandKind.VolSet && cmd.VolumePercent.HasValue) await _volume.SetAsync(cmd.VolumePercent.Value / 100f, ct);
         else if (cmd.Kind == TelegramCommandKind.Mute) await _volume.ToggleMuteAsync(ct);
+    }
 
+    async Task UpsertMessage(long chatId, CancellationToken ct)
+    {
         var st = await _media.GetStateAsync(ct);
         var vol = await _volume.GetVolumeAsync(ct);
         var mute = await _volume.GetMuteAsync(ct);
-        var text = $"{(st?.Playback ?? "Unknown")} {(st?.Title ?? "")} {(st?.Artist ?? "")}\nvol {(int)Math.Round(vol * 100)}% {(mute ? "mute" : "")}";
+        var line1 = $"{(st?.Playback ?? "Unknown")} • {(int)Math.Round(vol * 100)}% {(mute ? "(mute)" : "")}";
+        var line2 = $"{(st?.Title ?? "-")}";
+        var line3 = $"{(st?.Artist ?? "")}";
+        var text = string.IsNullOrWhiteSpace(line3) ? $"{line1}\n{line2}" : $"{line1}\n{line2}\n{line3}";
+
         var keyboard = new InlineKeyboardMarkup(new[]
         {
-            new []
-            {
-                InlineKeyboardButton.WithCallbackData("⏮", "/prev"),
-                InlineKeyboardButton.WithCallbackData("⏯", "/toggle"),
-                InlineKeyboardButton.WithCallbackData("⏭", "/next")
-            },
-            new []
-            {
-                InlineKeyboardButton.WithCallbackData("🔉", "/voldown"),
-                InlineKeyboardButton.WithCallbackData("🔇", "/mute"),
-                InlineKeyboardButton.WithCallbackData("🔊", "/volup")
-            }
+            new [] { InlineKeyboardButton.WithCallbackData("⏮","/prev"), InlineKeyboardButton.WithCallbackData("⏯","/toggle"), InlineKeyboardButton.WithCallbackData("⏭","/next") },
+            new [] { InlineKeyboardButton.WithCallbackData("🔉","/voldown"), InlineKeyboardButton.WithCallbackData("🔇","/mute"), InlineKeyboardButton.WithCallbackData("🔊","/volup") },
+            new [] { InlineKeyboardButton.WithCallbackData("🔄 Refresh","/refresh") }
         });
-        await _bot.SendTextMessageAsync(chatId, text, replyMarkup: keyboard, cancellationToken: ct);
+
+        if (_lastMessageByChat.TryGetValue(chatId, out var mid))
+        {
+            try
+            {
+                await _bot.EditMessageTextAsync(chatId, mid, text, replyMarkup: keyboard, cancellationToken: ct);
+                return;
+            }
+            catch (ApiRequestException ex) when (ex.Message.Contains("message is not modified")) { return; }
+            catch (ApiRequestException) { }
+        }
+
+        var msg = await _bot.SendTextMessageAsync(chatId, text, replyMarkup: keyboard, cancellationToken: ct);
+        _lastMessageByChat[chatId] = msg.MessageId;
     }
 }

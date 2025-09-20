@@ -18,7 +18,11 @@
     settings: document.getElementById('settings'),
     apiKeyInput: document.getElementById('apiKeyInput'),
     btnSave: document.getElementById('btnSave'),
-    btnClose: document.getElementById('btnClose')
+    btnClose: document.getElementById('btnClose'),
+    coverImg: document.getElementById('coverImg'),
+    coverPh: document.getElementById('coverPh'),
+    elapsed: document.getElementById('elapsed'),
+    left: document.getElementById('left')
 };
 
 function fmt(ms) {
@@ -29,43 +33,31 @@ function fmt(ms) {
     return `${m}:${r.toString().padStart(2, '0')}`;
 }
 
-function getApiKey() {
-    return localStorage.getItem('sharpmote_api_key') || '';
-}
-function setApiKey(v) {
-    localStorage.setItem('sharpmote_api_key', v);
-}
+function getApiKey() { return localStorage.getItem('sharpmote_api_key') || ''; }
+function setApiKey(v) { localStorage.setItem('sharpmote_api_key', v); }
 
 async function fetchApi(path, method = 'GET', body) {
     const key = getApiKey();
     if (!key) throw new Error('API key not set');
     const res = await fetch(path, {
         method,
-        headers: {
-            'Content-Type': 'application/json',
-            'X-Api-Key': key
-        },
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': key },
         body: body ? JSON.stringify(body) : undefined
     });
     if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return res;
 }
 
 function connectSse() {
     const key = getApiKey();
     if (!key) return;
     const es = new EventSource(`/events?api_key=${encodeURIComponent(key)}`);
-    es.addEventListener('state', e => {
-        const data = JSON.parse(e.data);
-        applyState(data);
-    });
-    es.addEventListener('volume', e => {
-        const data = JSON.parse(e.data);
-        applyVolume(data);
-    });
-    es.addEventListener('track', e => {
-        const data = JSON.parse(e.data);
-        applyTrack(data);
+    es.addEventListener('state', e => applyState(JSON.parse(e.data)));
+    es.addEventListener('volume', e => applyVolume(JSON.parse(e.data)));
+    es.addEventListener('track', async e => {
+        const t = JSON.parse(e.data);
+        applyState(t);
+        await loadAlbumArt();
     });
     es.onerror = () => { };
 }
@@ -79,7 +71,11 @@ function applyState(s) {
     els.dur.textContent = fmt(s.duration_ms);
     const pct = s.duration_ms > 0 ? Math.min(100, Math.max(0, Math.round(s.position_ms / s.duration_ms * 100))) : 0;
     els.bar.style.width = pct + '%';
+    els.elapsed.textContent = 'Прошло ' + fmt(s.position_ms);
+    const leftMs = Math.max(0, (s.duration_ms || 0) - (s.position_ms || 0));
+    els.left.textContent = 'Осталось ' + fmt(leftMs);
 }
+
 function applyVolume(v) {
     if (typeof v.volume === 'number') {
         const p = Math.round(v.volume * 100);
@@ -90,25 +86,36 @@ function applyVolume(v) {
         els.mute.textContent = v.mute ? '🔇' : '🔊';
     }
 }
-function applyTrack(t) {
-    applyState(t);
+
+async function loadAlbumArt() {
+    try {
+        const res = await fetchApi('/api/v1/albumart');
+        if (res.status === 204) { showPlaceholder(); return; }
+        const blob = await res.blob();
+        if (!blob || blob.size === 0) { showPlaceholder(); return; }
+        const url = URL.createObjectURL(blob);
+        els.coverImg.src = url;
+        els.coverImg.onload = () => URL.revokeObjectURL(url);
+        els.coverImg.classList.remove('hidden');
+        els.coverPh.classList.add('hidden');
+    } catch { showPlaceholder(); }
+}
+
+function showPlaceholder() {
+    els.coverImg.classList.add('hidden');
+    els.coverPh.classList.remove('hidden');
 }
 
 async function refresh() {
     try {
-        const s = await fetchApi('/api/v1/state');
+        const s = await (await fetchApi('/api/v1/state')).json();
         applyState(s);
         applyVolume(s);
-    } catch (e) { }
+        await loadAlbumArt();
+    } catch { }
 }
 
-function debounce(fn, ms) {
-    let tid;
-    return (...args) => {
-        clearTimeout(tid);
-        tid = setTimeout(() => fn(...args), ms);
-    };
-}
+function debounce(fn, ms) { let tid; return (...a) => { clearTimeout(tid); tid = setTimeout(() => fn(...a), ms); }; }
 
 els.btnPrev.onclick = () => fetchApi('/api/v1/prev', 'POST');
 els.btnToggle.onclick = () => fetchApi('/api/v1/toggle', 'POST');
@@ -123,16 +130,8 @@ els.volume.oninput = debounce(() => {
     fetchApi('/api/v1/volume/set', 'POST', { level });
 }, 80);
 
-els.btnSettings.onclick = () => {
-    els.apiKeyInput.value = getApiKey();
-    els.settings.classList.remove('hidden');
-};
-els.btnSave.onclick = () => {
-    setApiKey(els.apiKeyInput.value.trim());
-    els.settings.classList.add('hidden');
-    refresh();
-    connectSse();
-};
+els.btnSettings.onclick = () => { els.apiKeyInput.value = getApiKey(); els.settings.classList.remove('hidden'); };
+els.btnSave.onclick = () => { setApiKey(els.apiKeyInput.value.trim()); els.settings.classList.add('hidden'); refresh(); connectSse(); };
 els.btnClose.onclick = () => els.settings.classList.add('hidden');
 
 if (!getApiKey()) els.settings.classList.remove('hidden');

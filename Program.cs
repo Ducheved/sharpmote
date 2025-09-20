@@ -116,19 +116,23 @@ app.MapGet("/events", async (HttpContext ctx, SseService sse) =>
     return Results.Empty;
 }).RequireRateLimiting("api");
 
-app.MapGroup("/api/v1")
-    .MapApi();
+app.MapGroup("/api/v1").MapApi();
 
-app.MapGroup("/yandex/v1.0/user")
-    .MapYandex();
+app.MapGroup("/yandex/v1.0/user").MapYandex();
+
+app.MapGet("/api/v1/albumart", async (HttpContext ctx, IMediaSessionService media) =>
+{
+    var res = await media.GetAlbumArtAsync(ctx.RequestAborted);
+    if (res is null) return Results.NoContent();
+    ctx.Response.Headers["Cache-Control"] = "no-store";
+    return Results.Stream(res.Value.stream, res.Value.contentType);
+}).RequireRateLimiting("api");
 
 app.MapPost("/telegram/webhook/{secret}", async (HttpContext ctx, string secret, TelegramHostedService? ths, ILoggerFactory lf) =>
 {
     var logger = lf.CreateLogger("telegram_webhook");
     if (ths is null)
-    {
         return Results.Problem(statusCode: 503, title: "Telegram not configured", detail: "Missing TelegramHostedService");
-    }
     var expected = app.Configuration["SHARPMOTE_TELEGRAM_WEBHOOK_SECRET"];
     if (string.IsNullOrWhiteSpace(expected) || !string.Equals(expected, secret, StringComparison.Ordinal))
     {
@@ -136,9 +140,7 @@ app.MapPost("/telegram/webhook/{secret}", async (HttpContext ctx, string secret,
         return Results.Problem(statusCode: 403, title: "Forbidden", detail: "Invalid webhook secret");
     }
     if (!string.Equals(ctx.Request.ContentType, "application/json", StringComparison.OrdinalIgnoreCase))
-    {
         return Results.Problem(statusCode: 415, title: "Unsupported Media Type");
-    }
     var body = await new StreamReader(ctx.Request.Body, Encoding.UTF8).ReadToEndAsync(ctx.RequestAborted);
     await ths.ProcessWebhookUpdateAsync(body, ctx.RequestAborted);
     return Results.Ok(new { ok = true });
@@ -169,9 +171,9 @@ static class ApiExtensions
                 album = st.Album,
                 position_ms = st.PositionMs,
                 duration_ms = st.DurationMs,
+                timestamp = DateTimeOffset.UtcNow,
                 volume = vol,
-                mute,
-                timestamp = DateTimeOffset.UtcNow
+                mute
             });
         }).RequireRateLimiting("api");
 

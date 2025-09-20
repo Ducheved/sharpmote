@@ -9,6 +9,7 @@
 		<PublishTrimmed>false</PublishTrimmed>
 		<EnableWindowsTargeting>true</EnableWindowsTargeting>
 		<InvariantGlobalization>true</InvariantGlobalization>
+		<Platforms>AnyCPU;ARM64</Platforms>
 	</PropertyGroup>
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Windows.SDK.NET" Version="10.0.18362.6-preview" />

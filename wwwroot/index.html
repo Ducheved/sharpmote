@@ -5,62 +5,75 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>sharpmote</title>
     <link rel="icon" href="/favicon.svg">
-    <link rel="stylesheet" href="/css/styles.css">
+    <link rel="stylesheet" href="/css/tailwind.css">
 </head>
-<body>
-    <header class="top">
-        <div class="title">sharpmote</div>
-        <button id="btnSettings" aria-label="Настройки">⚙️</button>
+<body class="bg-base text-base min-h-screen">
+    <header class="sticky top-0 z-10 backdrop border-b flex items-center justify-between px-4 py-3">
+        <div class="font-bold text-xl">sharpmote</div>
+        <button id="btnSettings" class="btn ghost" aria-label="Настройки">⚙️</button>
     </header>
 
-    <main>
-        <section class="track-card">
-            <div class="cover" id="cover">
-                <svg viewBox="0 0 100 100" aria-hidden="true">
-                    <rect x="0" y="0" width="100" height="100" rx="12"></rect>
-                    <circle cx="50" cy="50" r="28"></circle>
-                    <circle cx="50" cy="50" r="6"></circle>
-                </svg>
-            </div>
-            <div class="meta">
-                <div id="title" class="title-text">–</div>
-                <div id="artist" class="artist-text">–</div>
-                <div id="app" class="app-text">–</div>
-                <div class="progress">
-                    <span id="pos">0:00</span>
-                    <div class="bar"><div id="barInner"></div></div>
-                    <span id="dur">0:00</span>
+    <main class="container mx-auto p-4 grid gap-4">
+        <section class="card grid gap-3">
+            <div class="flex items-center gap-3">
+                <div class="cover-sm">
+                    <img id="coverImg" alt="cover" class="w-full h-full object-cover hidden">
+                    <svg id="coverPh" viewBox="0 0 100 100" class="w-full h-full stroke-1 stroke-muted fill-none">
+                        <rect x="12" y="12" width="76" height="76" rx="12"></rect>
+                        <circle cx="50" cy="50" r="22"></circle>
+                        <circle cx="50" cy="50" r="6"></circle>
+                    </svg>
+                </div>
+                <div class="min-w-0 grow">
+                    <div class="text-2xl font-semibold truncate" id="title">–</div>
+                    <div class="text-muted truncate" id="artist">–</div>
+                    <div class="text-muted text-xs truncate" id="app">–</div>
+                </div>
+                <div class="ml-auto text-right text-sm shrink-0">
+                    <div id="elapsed">0:00</div>
+                    <div id="left" class="text-muted">−0:00</div>
                 </div>
             </div>
-        </section>
 
-        <section class="controls">
-            <button id="btnPrev" class="big">⏮</button>
-            <button id="btnToggle" class="big accent">⏯</button>
-            <button id="btnNext" class="big">⏭</button>
-        </section>
-
-        <section class="volume">
-            <div class="volwrap">
-                <span id="mute" class="mute">🔊</span>
-                <input id="volume" type="range" min="0" max="100" step="1" value="50">
-                <span id="percent">50%</span>
+            <div class="grid grid-cols-[56px_1fr_56px] items-center gap-3">
+                <span id="pos" class="tabular-nums">0:00</span>
+                <div class="h-2 bg-muted rounded-full overflow-hidden">
+                    <div id="barInner" class="h-full bg-accent w-0"></div>
+                </div>
+                <span id="dur" class="tabular-nums">0:00</span>
             </div>
-            <div class="volbuttons">
-                <button id="btnVolDown">−5%</button>
-                <button id="btnMute">Mute</button>
-                <button id="btnVolUp">+5%</button>
+        </section>
+
+        <section class="grid grid-cols-3 gap-3">
+            <button id="btnPrev" class="btn xl">⏮</button>
+            <button id="btnToggle" class="btn xl primary">⏯</button>
+            <button id="btnNext" class="btn xl">⏭</button>
+        </section>
+
+        <section class="card grid gap-3">
+            <div class="grid grid-cols-[32px_1fr_64px] items-center gap-3">
+                <span id="mute" class="text-lg">🔊</span>
+                <input id="volume" type="range" min="0" max="100" step="1" value="50" class="range">
+                <span id="percent" class="text-right tabular-nums">50%</span>
+            </div>
+            <div class="grid grid-cols-3 gap-3">
+                <button id="btnVolDown" class="btn">−5%</button>
+                <button id="btnMute" class="btn">Mute</button>
+                <button id="btnVolUp" class="btn">+5%</button>
             </div>
         </section>
     </main>
 
     <div id="settings" class="modal hidden">
         <div class="modal-body">
-            <h2>Настройки</h2>
-            <label>API Key <input id="apiKeyInput" type="password" placeholder="X-Api-Key"></label>
-            <div class="row">
-                <button id="btnSave">Сохранить</button>
-                <button id="btnClose">Закрыть</button>
+            <h2 class="text-xl font-semibold">Настройки</h2>
+            <label class="grid gap-1">
+                API Key
+                <input id="apiKeyInput" type="password" placeholder="X-Api-Key" class="input">
+            </label>
+            <div class="flex justify-end gap-2">
+                <button id="btnSave" class="btn primary">Сохранить</button>
+                <button id="btnClose" class="btn ghost">Закрыть</button>
             </div>
         </div>
     </div>
