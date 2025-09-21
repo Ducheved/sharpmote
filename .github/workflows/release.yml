@@ -1,0 +1,30 @@
+name: release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - name: Restore
+        run: dotnet restore .\sharpmote.csproj
+      - name: Publish
+        run: dotnet publish .\sharpmote.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:PublishTrimmed=false -o .\publish
+      - name: Place conf
+        run: Copy-Item .\sharpmote.conf.sample .\publish\sharpmote.conf -Force
+      - name: Archive
+        run: Compress-Archive -Path .\publish\* -DestinationPath .\sharpmote-win-x64.zip -Force
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sharpmote-win-x64.zip
+            publish/sharpmote.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

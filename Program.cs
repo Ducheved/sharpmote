@@ -1,22 +1,28 @@
-﻿using System.Text;
+﻿using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Hosting.WindowsServices;
+using Microsoft.Extensions.Logging;
 using Sharpmote.App.Auth;
+using Sharpmote.App.Config;
 using Sharpmote.App.Connectors.TelegramBot;
 using Sharpmote.App.Connectors.YandexSmartHome;
 using Sharpmote.App.Middleware;
-using Sharpmote.App.Services;
 using Sharpmote.App.Serialization;
+using Sharpmote.App.Services;
+
+var pre = ConfLoader.LoadFrom(AppContext.BaseDirectory, "sharpmote.conf");
 
 var builder = WebApplication.CreateBuilder(args);
 
+if (pre.Count > 0) builder.Configuration.AddInMemoryCollection(pre);
 builder.Configuration.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
 builder.Configuration.AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true);
 builder.Configuration.AddEnvironmentVariables();
@@ -93,8 +99,9 @@ var app = builder.Build();
 app.UseMiddleware<ErrorHandlingMiddleware>();
 app.UseMiddleware<RequestLoggingMiddleware>();
 
-app.UseDefaultFiles();
-app.UseStaticFiles();
+var embedded = new ManifestEmbeddedFileProvider(Assembly.GetExecutingAssembly(), "wwwroot");
+app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = embedded });
+app.UseStaticFiles(new StaticFileOptions { FileProvider = embedded });
 
 app.UseMiddleware<ApiKeyMiddleware>();
 
