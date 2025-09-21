@@ -25,10 +25,13 @@ public class TelegramHostedService : BackgroundService
     readonly HashSet<string> _allowedNames;
     readonly Dictionary<long, int> _lastMessageByChat = new();
     readonly Dictionary<long, AclMode> _aclPendingByChat = new();
+    readonly Dictionary<long, int> _promptMessageByChat = new();
     readonly object _aclGate = new();
     FileSystemWatcher? _confWatcher;
     readonly string _confPath;
     int _lastUpdateId;
+
+    const int EphemeralMs = 3500;
 
     enum AclMode { None, Add, Remove }
 
@@ -134,28 +137,32 @@ public class TelegramHostedService : BackgroundService
                 if (cmd.Kind == TelegramCommandKind.Cancel)
                 {
                     _aclPendingByChat.Remove(chatId);
-                    await _bot.SendTextMessageAsync(chatId, "ок, отменил", cancellationToken: ct);
+                    await SendEphemeral(chatId, "ок, отменил", ct);
+                    await TryDeletePrompt(chatId, ct);
+                    await TryDeleteUserMessage(update.Message.Chat.Id, update.Message.MessageId, ct);
                     return;
                 }
                 var token = ResolveAllowedToken(text);
                 if (string.IsNullOrWhiteSpace(token))
                 {
-                    await _bot.SendTextMessageAsync(chatId, "не могу разобрать id, пришлите @username, tg://user?id=..., https://t.me/...", cancellationToken: ct);
+                    await SendEphemeral(chatId, "не могу разобрать id, пришлите @username или ссылку", ct);
                     return;
                 }
                 if (mode == AclMode.Add)
                 {
                     var added = AddAllowedToken(token);
                     if (added) PersistAllowedToConf();
-                    await _bot.SendTextMessageAsync(chatId, added ? $"добавил {token}" : "уже в списке", cancellationToken: ct);
+                    await SendEphemeral(chatId, added ? $"добавил {token}" : "уже в списке", ct);
                 }
                 else
                 {
                     var removed = RemoveAllowedToken(token);
                     if (removed) PersistAllowedToConf();
-                    await _bot.SendTextMessageAsync(chatId, removed ? $"убрал {token}" : "не найдено", cancellationToken: ct);
+                    await SendEphemeral(chatId, removed ? $"убрал {token}" : "не найдено", ct);
                 }
                 _aclPendingByChat.Remove(chatId);
+                await TryDeletePrompt(chatId, ct);
+                await TryDeleteUserMessage(update.Message.Chat.Id, update.Message.MessageId, ct);
                 await UpsertMessage(chatId, userId, username, ct);
                 return;
             }
@@ -194,7 +201,7 @@ public class TelegramHostedService : BackgroundService
             if (cmd.Kind == TelegramCommandKind.WhoAmI)
             {
                 await _bot.AnswerCallbackQueryAsync(update.CallbackQuery.Id, cancellationToken: ct);
-                await _bot.SendTextMessageAsync(chatId, $"{userId}", cancellationToken: ct);
+                await SendEphemeral(chatId, $"{userId}", ct);
                 return;
             }
 
@@ -216,7 +223,8 @@ public class TelegramHostedService : BackgroundService
             {
                 _aclPendingByChat[chatId] = AclMode.Add;
                 await _bot.AnswerCallbackQueryAsync(update.CallbackQuery.Id, cancellationToken: ct);
-                await _bot.SendTextMessageAsync(chatId, "пришлите @username или ссылку на профиль", cancellationToken: ct);
+                var prompt = await _bot.SendTextMessageAsync(chatId, "пришлите @username или ссылку на профиль", cancellationToken: ct);
+                _promptMessageByChat[chatId] = prompt.MessageId;
                 return;
             }
 
@@ -224,7 +232,8 @@ public class TelegramHostedService : BackgroundService
             {
                 _aclPendingByChat[chatId] = AclMode.Remove;
                 await _bot.AnswerCallbackQueryAsync(update.CallbackQuery.Id, cancellationToken: ct);
-                await _bot.SendTextMessageAsync(chatId, "кого убрать? пришлите @username или id", cancellationToken: ct);
+                var prompt = await _bot.SendTextMessageAsync(chatId, "кого убрать? пришлите @username или id", cancellationToken: ct);
+                _promptMessageByChat[chatId] = prompt.MessageId;
                 return;
             }
 
@@ -262,7 +271,7 @@ public class TelegramHostedService : BackgroundService
     async Task<int> HandleCommand(TelegramCommand cmd, long chatId, long userId, string? username, CancellationToken ct)
     {
         if (cmd.Kind == TelegramCommandKind.Refresh) return 0;
-        if (cmd.Kind == TelegramCommandKind.WhoAmI) { await _bot.SendTextMessageAsync(chatId, $"{userId}", cancellationToken: ct); return 0; }
+        if (cmd.Kind == TelegramCommandKind.WhoAmI) { await SendEphemeral(chatId, $"{userId}", ct); return 0; }
         if (cmd.Kind == TelegramCommandKind.AllowedList)
         {
             string list;
@@ -272,29 +281,41 @@ public class TelegramHostedService : BackgroundService
                 var b = _allowedNames.Select(x => x.StartsWith("@") ? x : "@" + x).OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
                 list = string.Join(", ", a.Concat(b));
             }
-            await _bot.SendTextMessageAsync(chatId, string.IsNullOrWhiteSpace(list) ? "(empty)" : list, cancellationToken: ct);
+            await SendEphemeral(chatId, string.IsNullOrWhiteSpace(list) ? "(empty)" : list, ct);
             return 0;
         }
         if (cmd.Kind == TelegramCommandKind.Allow && cmd.Arg != null)
         {
             var token = ResolveAllowedToken(cmd.Arg);
-            if (token == null) { await _bot.SendTextMessageAsync(chatId, "не могу разобрать id", cancellationToken: ct); return 0; }
+            if (token == null) { await SendEphemeral(chatId, "не могу разобрать id", ct); return 0; }
             var added = AddAllowedToken(token);
             if (added) PersistAllowedToConf();
-            await _bot.SendTextMessageAsync(chatId, added ? $"добавил {token}" : "уже в списке", cancellationToken: ct);
+            await SendEphemeral(chatId, added ? $"добавил {token}" : "уже в списке", ct);
             return 0;
         }
         if (cmd.Kind == TelegramCommandKind.Unallow && cmd.Arg != null)
         {
             var token = ResolveAllowedToken(cmd.Arg);
-            if (token == null) { await _bot.SendTextMessageAsync(chatId, "не могу разобрать id", cancellationToken: ct); return 0; }
+            if (token == null) { await SendEphemeral(chatId, "не могу разобрать id", ct); return 0; }
             var removed = RemoveAllowedToken(token);
             if (removed) PersistAllowedToConf();
-            await _bot.SendTextMessageAsync(chatId, removed ? $"убрал {token}" : "не найдено", cancellationToken: ct);
+            await SendEphemeral(chatId, removed ? $"убрал {token}" : "не найдено", ct);
             return 0;
         }
-        if (cmd.Kind == TelegramCommandKind.AllowPrompt) { _aclPendingByChat[chatId] = AclMode.Add; await _bot.SendTextMessageAsync(chatId, "пришлите @username или ссылку на профиль", cancellationToken: ct); return 0; }
-        if (cmd.Kind == TelegramCommandKind.UnallowPrompt) { _aclPendingByChat[chatId] = AclMode.Remove; await _bot.SendTextMessageAsync(chatId, "кого убрать? пришлите @username или id", cancellationToken: ct); return 0; }
+        if (cmd.Kind == TelegramCommandKind.AllowPrompt)
+        {
+            _aclPendingByChat[chatId] = AclMode.Add;
+            var prompt = await _bot.SendTextMessageAsync(chatId, "пришлите @username или ссылку на профиль", cancellationToken: ct);
+            _promptMessageByChat[chatId] = prompt.MessageId;
+            return 0;
+        }
+        if (cmd.Kind == TelegramCommandKind.UnallowPrompt)
+        {
+            _aclPendingByChat[chatId] = AclMode.Remove;
+            var prompt = await _bot.SendTextMessageAsync(chatId, "кого убрать? пришлите @username или id", cancellationToken: ct);
+            _promptMessageByChat[chatId] = prompt.MessageId;
+            return 0;
+        }
 
         if (cmd.Kind == TelegramCommandKind.Play) { await _media.PlayAsync(ct); return 1; }
         if (cmd.Kind == TelegramCommandKind.Pause) { await _media.PauseAsync(ct); return 1; }
@@ -356,6 +377,35 @@ public class TelegramHostedService : BackgroundService
 
         var msg = await _bot.SendTextMessageAsync(chatId, text, replyMarkup: keyboard, cancellationToken: ct);
         _lastMessageByChat[chatId] = msg.MessageId;
+    }
+
+    async Task<int?> SendEphemeral(long chatId, string text, CancellationToken ct)
+    {
+        var m = await _bot.SendTextMessageAsync(chatId, text, cancellationToken: ct);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(EphemeralMs);
+                await _bot.DeleteMessageAsync(chatId, m.MessageId);
+            }
+            catch { }
+        });
+        return m.MessageId;
+    }
+
+    async Task TryDeleteUserMessage(long chatId, int messageId, CancellationToken ct)
+    {
+        try { await _bot.DeleteMessageAsync(chatId, messageId, ct); } catch { }
+    }
+
+    async Task TryDeletePrompt(long chatId, CancellationToken ct)
+    {
+        if (_promptMessageByChat.TryGetValue(chatId, out var mid))
+        {
+            try { await _bot.DeleteMessageAsync(chatId, mid, ct); } catch { }
+            _promptMessageByChat.Remove(chatId);
+        }
     }
 
     bool IsAllowed(long userId, long chatId, string? username)
