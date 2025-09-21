@@ -25,6 +25,8 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
     byte[]? _artBytes;
     string _artContentType = "image/jpeg";
     readonly object _gate = new();
+    readonly AsyncSignal _stateChanged = new();
+    readonly AsyncSignal _trackChanged = new();
 
     public MediaSessionService(ILogger<MediaSessionService> logger, SseService sse)
     {
@@ -120,6 +122,8 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
             _baseDurMs = (long)(tl.EndTime - tl.StartTime).TotalMilliseconds;
             _baseTime = DateTimeOffset.UtcNow;
         }
+        _stateChanged.Pulse();
+        _trackChanged.Pulse();
         _ = RefreshMediaPropsAsync();
     }
 
@@ -144,6 +148,7 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
         {
             var pi = sender.GetPlaybackInfo();
             lock (_gate) { _playback = pi?.PlaybackStatus.ToString() ?? "Unknown"; _baseTime = DateTimeOffset.UtcNow; }
+            _stateChanged.Pulse();
         }
         catch { }
     }
@@ -159,6 +164,7 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
                 _baseDurMs = (long)(tl.EndTime - tl.StartTime).TotalMilliseconds;
                 _baseTime = DateTimeOffset.UtcNow;
             }
+            _stateChanged.Pulse();
         }
         catch { }
     }
@@ -198,6 +204,8 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
                     _artContentType = contentType;
                 }
             }
+            _trackChanged.Pulse();
+            _stateChanged.Pulse();
             await _sse.BroadcastAsync("track", new
             {
                 title,
@@ -213,6 +221,16 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
     public Task<MediaState?> GetStateAsync(CancellationToken ct)
     {
         lock (_gate) { return Task.FromResult(_state); }
+    }
+
+    public Task WaitForChangeAsync(TimeSpan maxWait, CancellationToken ct)
+    {
+        return _stateChanged.WaitAsync(maxWait, ct);
+    }
+
+    public Task WaitForTrackChangeAsync(TimeSpan maxWait, CancellationToken ct)
+    {
+        return _trackChanged.WaitAsync(maxWait, ct);
     }
 
     public async Task PlayAsync(CancellationToken ct)
@@ -260,6 +278,11 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
         }
     }
 
+    public Task ForceRefreshAsync(CancellationToken ct)
+    {
+        return RefreshMediaPropsAsync();
+    }
+
     async Task<bool> TrySessionAsync(Func<GlobalSystemMediaTransportControlsSession, Task<bool>> act, CancellationToken ct)
     {
         try
@@ -290,5 +313,25 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
             new INPUT{ type=1, U=new InputUnion{ ki=new KEYBDINPUT{ wVk=(ushort)key, dwFlags=2 } } }
         };
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+    }
+
+    sealed class AsyncSignal
+    {
+        volatile TaskCompletionSource<bool> _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task WaitAsync(TimeSpan timeout, CancellationToken ct)
+        {
+            var task = _tcs.Task;
+            if (timeout <= TimeSpan.Zero) return task.WaitAsync(ct);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(timeout);
+            return task.WaitAsync(cts.Token);
+        }
+        public void Pulse()
+        {
+            var tcs = _tcs;
+            var n = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (Interlocked.CompareExchange(ref _tcs, n, tcs) == tcs)
+                tcs.TrySetResult(true);
+        }
     }
 }

@@ -17,12 +17,13 @@ using Sharpmote.App.Connectors.YandexSmartHome;
 using Sharpmote.App.Middleware;
 using Sharpmote.App.Serialization;
 using Sharpmote.App.Services;
+using System.Linq;
 
 var pre = ConfLoader.LoadFrom(AppContext.BaseDirectory, "sharpmote.conf");
 
 var builder = WebApplication.CreateBuilder(args);
 
-if (pre.Count > 0) builder.Configuration.AddInMemoryCollection(pre);
+if (pre.Count > 0) builder.Configuration.AddInMemoryCollection(pre.Select(kv => new KeyValuePair<string, string?>(kv.Key, kv.Value)));
 builder.Configuration.AddJsonFile("appsettings.json", optional: true, reloadOnChange: true);
 builder.Configuration.AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true);
 builder.Configuration.AddEnvironmentVariables();

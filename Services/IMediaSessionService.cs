@@ -7,6 +7,8 @@ public record MediaState(string Playback, string App, string Title, string Artis
 public interface IMediaSessionService
 {
     Task<MediaState?> GetStateAsync(CancellationToken ct);
+    Task WaitForChangeAsync(TimeSpan maxWait, CancellationToken ct);
+    Task WaitForTrackChangeAsync(TimeSpan maxWait, CancellationToken ct);
     Task PlayAsync(CancellationToken ct);
     Task PauseAsync(CancellationToken ct);
     Task TogglePlayPauseAsync(CancellationToken ct);
@@ -14,4 +16,5 @@ public interface IMediaSessionService
     Task PreviousAsync(CancellationToken ct);
     Task StopPlaybackAsync(CancellationToken ct);
     Task<(Stream stream, string contentType)?> GetAlbumArtAsync(CancellationToken ct);
+    Task ForceRefreshAsync(CancellationToken ct);
 }
