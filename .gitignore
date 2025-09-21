@@ -56,3 +56,4 @@ nunit-*.xml
 /Properties/launchSettings.json
 /Properties/launchSettings.json
 /publish
+*.ps1
