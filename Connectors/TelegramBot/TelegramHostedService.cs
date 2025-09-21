@@ -98,8 +98,10 @@ public class TelegramHostedService : BackgroundService
         }
         else if (update.CallbackQuery != null)
         {
-            var chatId = update.CallbackQuery.Message.Chat.Id;
-            var userId = update.CallbackQuery.From.Id;
+            var msg = update.CallbackQuery.Message;
+            if (msg == null) return;
+            var chatId = msg.Chat.Id;
+            var userId = update.CallbackQuery.From?.Id ?? 0;
             if (_allowed.Count > 0 && !_allowed.Contains(userId) && !_allowed.Contains(chatId))
             {
                 await _bot.AnswerCallbackQueryAsync(update.CallbackQuery.Id, "forbidden", cancellationToken: ct);
@@ -108,7 +110,7 @@ public class TelegramHostedService : BackgroundService
             var data = update.CallbackQuery.Data ?? "";
             if (!string.Equals(data, "/refresh", StringComparison.OrdinalIgnoreCase))
                 await HandleCommand(data, chatId, ct);
-            _lastMessageByChat[chatId] = update.CallbackQuery.Message.MessageId;
+            _lastMessageByChat[chatId] = msg.MessageId;
             await UpsertMessage(chatId, ct);
             await _bot.AnswerCallbackQueryAsync(update.CallbackQuery.Id, cancellationToken: ct);
         }

@@ -11,11 +11,20 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
     readonly ILogger<MediaSessionService> _logger;
     readonly SseService _sse;
     GlobalSystemMediaTransportControlsSessionManager? _manager;
-    MediaState? _lastState;
-    PeriodicTimer? _timer;
-    DateTimeOffset _lastTick;
-    long _estimatePosMs;
-    string _lastTrackKey = "";
+    GlobalSystemMediaTransportControlsSession? _current;
+    MediaState? _state;
+    PeriodicTimer? _tick;
+    long _basePosMs;
+    long _baseDurMs;
+    DateTimeOffset _baseTime;
+    string _title = "";
+    string _artist = "";
+    string _album = "";
+    string _app = "";
+    string _playback = "Unknown";
+    byte[]? _artBytes;
+    string _artContentType = "image/jpeg";
+    readonly object _gate = new();
 
     public MediaSessionService(ILogger<MediaSessionService> logger, SseService sse)
     {
@@ -28,9 +37,11 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
         try
         {
             _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            _timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
-            _lastTick = DateTimeOffset.UtcNow;
-            _ = Task.Run(() => PollLoop(cancellationToken));
+            _manager.CurrentSessionChanged += OnCurrentSessionChanged;
+            _manager.SessionsChanged += OnSessionsChanged;
+            Attach(_manager.GetCurrentSession());
+            _tick = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
+            _ = Task.Run(() => TickLoop(cancellationToken));
         }
         catch (Exception ex)
         {
@@ -40,105 +51,168 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
 
     public Task StopAsync(CancellationToken cancellationToken)
     {
-        _timer?.Dispose();
+        _tick?.Dispose();
+        if (_current != null)
+        {
+            _current.MediaPropertiesChanged -= OnMediaProps;
+            _current.PlaybackInfoChanged -= OnPlayback;
+            _current.TimelinePropertiesChanged -= OnTimeline;
+        }
+        if (_manager != null)
+        {
+            _manager.CurrentSessionChanged -= OnCurrentSessionChanged;
+            _manager.SessionsChanged -= OnSessionsChanged;
+        }
         return Task.CompletedTask;
     }
 
-    async Task PollLoop(CancellationToken ct)
+    async Task TickLoop(CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested && _timer != null && await _timer.WaitForNextTickAsync(ct))
+        while (!ct.IsCancellationRequested && _tick != null && await _tick.WaitForNextTickAsync(ct))
         {
-            try
+            MediaState? snapshot = null;
+            lock (_gate)
             {
-                var st = await ReadStateAsync(ct);
-                if (st != null)
+                var now = DateTimeOffset.UtcNow;
+                var estPos = _playback == "Playing" && _baseDurMs > 0
+                    ? Math.Min(_baseDurMs, _basePosMs + (long)(now - _baseTime).TotalMilliseconds)
+                    : _basePosMs;
+                _state = new MediaState(_playback, _app, _title, _artist, _album, Math.Max(0, estPos), Math.Max(0, _baseDurMs));
+                snapshot = _state;
+            }
+            if (snapshot != null)
+            {
+                await _sse.BroadcastAsync("state", new
                 {
-                    _lastState = st;
-                    await _sse.BroadcastAsync("state", new
-                    {
-                        playback = st.Playback,
-                        app = st.App,
-                        title = st.Title,
-                        artist = st.Artist,
-                        album = st.Album,
-                        position_ms = st.PositionMs,
-                        duration_ms = st.DurationMs,
-                        timestamp = DateTimeOffset.UtcNow
-                    }, ct);
-                    await _sse.BroadcastAsync("track", new
-                    {
-                        title = st.Title,
-                        artist = st.Artist,
-                        album = st.Album,
-                        app = st.App,
-                        position_ms = st.PositionMs,
-                        duration_ms = st.DurationMs,
-                        timestamp = DateTimeOffset.UtcNow
-                    }, ct);
+                    playback = snapshot.Playback,
+                    app = snapshot.App,
+                    title = snapshot.Title,
+                    artist = snapshot.Artist,
+                    album = snapshot.Album,
+                    position_ms = snapshot.PositionMs,
+                    duration_ms = snapshot.DurationMs,
+                    timestamp = DateTimeOffset.UtcNow
+                }, ct);
+            }
+        }
+    }
+
+    void Attach(GlobalSystemMediaTransportControlsSession? session)
+    {
+        if (_current != null)
+        {
+            _current.MediaPropertiesChanged -= OnMediaProps;
+            _current.PlaybackInfoChanged -= OnPlayback;
+            _current.TimelinePropertiesChanged -= OnTimeline;
+        }
+        _current = session;
+        if (_current == null) return;
+        _current.MediaPropertiesChanged += OnMediaProps;
+        _current.PlaybackInfoChanged += OnPlayback;
+        _current.TimelinePropertiesChanged += OnTimeline;
+        var pi = _current.GetPlaybackInfo();
+        var tl = _current.GetTimelineProperties();
+        lock (_gate)
+        {
+            _playback = pi?.PlaybackStatus.ToString() ?? "Unknown";
+            _app = _current.SourceAppUserModelId ?? "";
+            _basePosMs = (long)(tl.Position - tl.StartTime).TotalMilliseconds;
+            _baseDurMs = (long)(tl.EndTime - tl.StartTime).TotalMilliseconds;
+            _baseTime = DateTimeOffset.UtcNow;
+        }
+        _ = RefreshMediaPropsAsync();
+    }
+
+    void OnCurrentSessionChanged(GlobalSystemMediaTransportControlsSessionManager sender, CurrentSessionChangedEventArgs args)
+    {
+        try { Attach(sender.GetCurrentSession()); } catch { }
+    }
+
+    void OnSessionsChanged(GlobalSystemMediaTransportControlsSessionManager sender, SessionsChangedEventArgs args)
+    {
+        try { Attach(sender.GetCurrentSession()); } catch { }
+    }
+
+    async void OnMediaProps(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
+    {
+        try { await RefreshMediaPropsAsync(); } catch { }
+    }
+
+    void OnPlayback(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
+    {
+        try
+        {
+            var pi = sender.GetPlaybackInfo();
+            lock (_gate) { _playback = pi?.PlaybackStatus.ToString() ?? "Unknown"; _baseTime = DateTimeOffset.UtcNow; }
+        }
+        catch { }
+    }
+
+    void OnTimeline(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args)
+    {
+        try
+        {
+            var tl = sender.GetTimelineProperties();
+            lock (_gate)
+            {
+                _basePosMs = (long)(tl.Position - tl.StartTime).TotalMilliseconds;
+                _baseDurMs = (long)(tl.EndTime - tl.StartTime).TotalMilliseconds;
+                _baseTime = DateTimeOffset.UtcNow;
+            }
+        }
+        catch { }
+    }
+
+    async Task RefreshMediaPropsAsync()
+    {
+        if (_current == null) return;
+        try
+        {
+            var props = await _current.TryGetMediaPropertiesAsync();
+            var title = props?.Title ?? "";
+            var artist = props?.Artist ?? "";
+            var album = props?.AlbumTitle ?? "";
+            var artRef = props?.Thumbnail;
+            byte[]? art = null;
+            string contentType = "image/jpeg";
+            if (artRef != null)
+            {
+                var ras = await artRef.OpenReadAsync();
+                if (ras != null && ras.Size > 0)
+                {
+                    contentType = string.IsNullOrWhiteSpace(ras.ContentType) ? "image/jpeg" : ras.ContentType;
+                    using var src = ras.AsStreamForRead();
+                    using var ms = new MemoryStream();
+                    await src.CopyToAsync(ms);
+                    art = ms.ToArray();
                 }
             }
-            catch { }
+            lock (_gate)
+            {
+                _title = title;
+                _artist = artist;
+                _album = album;
+                if (art != null)
+                {
+                    _artBytes = art;
+                    _artContentType = contentType;
+                }
+            }
+            await _sse.BroadcastAsync("track", new
+            {
+                title,
+                artist,
+                album,
+                app = _app,
+                timestamp = DateTimeOffset.UtcNow
+            });
         }
+        catch { }
     }
 
-    public async Task<MediaState?> GetStateAsync(CancellationToken ct)
+    public Task<MediaState?> GetStateAsync(CancellationToken ct)
     {
-        var st = await ReadStateAsync(ct);
-        return st;
-    }
-
-    async Task<MediaState?> ReadStateAsync(CancellationToken ct)
-    {
-        var now = DateTimeOffset.UtcNow;
-        var delta = (long)(now - _lastTick).TotalMilliseconds;
-        _lastTick = now;
-
-        if (_manager == null)
-            _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-        var session = _manager?.GetCurrentSession();
-        if (session == null)
-            return null;
-
-        var playback = session.GetPlaybackInfo();
-        var timeline = session.GetTimelineProperties();
-        var props = await session.TryGetMediaPropertiesAsync();
-
-        var title = props?.Title ?? "";
-        var artist = props?.Artist ?? "";
-        var album = props?.AlbumTitle ?? "";
-        var app = session.SourceAppUserModelId ?? "";
-        var status = playback?.PlaybackStatus.ToString() ?? "Unknown";
-
-        var start = timeline.StartTime;
-        var rawDuration = (long)(timeline.EndTime - start).TotalMilliseconds;
-        var rawPos = (long)(timeline.Position - start).TotalMilliseconds;
-        if (rawDuration < 0) rawDuration = 0;
-        if (rawPos < 0) rawPos = 0;
-        var trackKey = $"{app}|{title}|{artist}|{album}";
-
-        if (_lastTrackKey != trackKey)
-        {
-            _lastTrackKey = trackKey;
-            _estimatePosMs = rawPos;
-        }
-
-        if (status == "Playing")
-        {
-            if (rawDuration > 0)
-                _estimatePosMs = rawPos > 0 ? rawPos : Math.Min(rawDuration, _estimatePosMs + Math.Max(0, delta));
-            else
-                _estimatePosMs = Math.Max(0, _estimatePosMs + Math.Max(0, delta));
-        }
-        else
-        {
-            if (rawPos > 0)
-                _estimatePosMs = rawPos;
-        }
-
-        if (rawDuration > 0 && _estimatePosMs > rawDuration)
-            _estimatePosMs = rawDuration;
-
-        return new MediaState(status, app, title, artist, album, _estimatePosMs, rawDuration);
+        lock (_gate) { return Task.FromResult(_state); }
     }
 
     public async Task PlayAsync(CancellationToken ct)
@@ -177,29 +251,12 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
         SendVk(VirtualKey.VK_MEDIA_STOP);
     }
 
-    public async Task<(Stream stream, string contentType)?> GetAlbumArtAsync(CancellationToken ct)
+    public Task<(Stream stream, string contentType)?> GetAlbumArtAsync(CancellationToken ct)
     {
-        try
+        lock (_gate)
         {
-            if (_manager == null)
-                _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            var session = _manager?.GetCurrentSession();
-            if (session == null) return null;
-            var props = await session.TryGetMediaPropertiesAsync();
-            var thumb = props?.Thumbnail;
-            if (thumb == null) return null;
-            var ras = await thumb.OpenReadAsync();
-            if (ras == null || ras.Size == 0) return null;
-            var contentType = string.IsNullOrWhiteSpace(ras.ContentType) ? "image/jpeg" : ras.ContentType;
-            using var src = ras.AsStreamForRead();
-            var ms = new MemoryStream();
-            await src.CopyToAsync(ms, ct);
-            ms.Position = 0;
-            return (ms, contentType);
-        }
-        catch
-        {
-            return null;
+            if (_artBytes == null || _artBytes.Length == 0) return Task.FromResult<(Stream, string)?>(null);
+            return Task.FromResult<(Stream, string)?>((new MemoryStream(_artBytes, writable: false), _artContentType));
         }
     }
 
@@ -207,19 +264,17 @@ public class MediaSessionService : IHostedService, IMediaSessionService, IDispos
     {
         try
         {
-            if (_manager == null)
-                _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
-            var session = _manager?.GetCurrentSession();
-            if (session == null) return false;
-            var ok = await act(session);
-            return ok;
+            if (_manager == null) _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+            var s = _manager?.GetCurrentSession();
+            if (s == null) return false;
+            return await act(s);
         }
         catch { return false; }
     }
 
     public void Dispose()
     {
-        _timer?.Dispose();
+        _tick?.Dispose();
     }
 
     enum VirtualKey : ushort { VK_MEDIA_NEXT_TRACK = 0xB0, VK_MEDIA_PREV_TRACK = 0xB1, VK_MEDIA_STOP = 0xB2, VK_MEDIA_PLAY_PAUSE = 0xB3 }

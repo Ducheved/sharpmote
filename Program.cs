@@ -13,6 +13,7 @@ using Sharpmote.App.Connectors.TelegramBot;
 using Sharpmote.App.Connectors.YandexSmartHome;
 using Sharpmote.App.Middleware;
 using Sharpmote.App.Services;
+using Sharpmote.App.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -34,7 +35,7 @@ builder.WebHost.ConfigureKestrel(options =>
     options.Limits.MaxRequestBodySize = 1 * 1024 * 1024;
     options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(120);
     options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(15);
-    options.Limits.MaxConcurrentConnections = 200;
+    options.Limits.MaxConcurrentConnections = 400;
 });
 
 builder.Services.AddProblemDetails();
@@ -46,19 +47,21 @@ builder.Services.AddRateLimiter(options =>
         ctx.HttpContext.Response.Headers.RetryAfter = "1";
         return ValueTask.CompletedTask;
     };
-    options.AddFixedWindowLimiter("api", opt =>
+    options.AddTokenBucketLimiter("api", opt =>
     {
-        opt.Window = TimeSpan.FromSeconds(1);
-        opt.PermitLimit = 20;
+        opt.TokenLimit = 40;
         opt.QueueProcessingOrder = System.Threading.RateLimiting.QueueProcessingOrder.OldestFirst;
-        opt.QueueLimit = 40;
+        opt.QueueLimit = 80;
+        opt.ReplenishmentPeriod = TimeSpan.FromSeconds(1);
+        opt.TokensPerPeriod = 40;
         opt.AutoReplenishment = true;
     });
-    options.AddFixedWindowLimiter("webhook", opt =>
+    options.AddTokenBucketLimiter("webhook", opt =>
     {
-        opt.Window = TimeSpan.FromSeconds(1);
-        opt.PermitLimit = 10;
-        opt.QueueLimit = 20;
+        opt.TokenLimit = 15;
+        opt.QueueLimit = 30;
+        opt.ReplenishmentPeriod = TimeSpan.FromSeconds(1);
+        opt.TokensPerPeriod = 15;
         opt.AutoReplenishment = true;
     });
 });
@@ -97,7 +100,7 @@ app.UseMiddleware<ApiKeyMiddleware>();
 
 app.UseRateLimiter();
 
-app.MapGet("/healthz", () => Results.Ok(new { ok = true }));
+app.MapGet("/healthz", () => Results.Ok(new OkDto())).RequireRateLimiting("api");
 
 app.MapGet("/events", async (HttpContext ctx, SseService sse) =>
 {
@@ -143,7 +146,7 @@ app.MapPost("/telegram/webhook/{secret}", async (HttpContext ctx, string secret,
         return Results.Problem(statusCode: 415, title: "Unsupported Media Type");
     var body = await new StreamReader(ctx.Request.Body, Encoding.UTF8).ReadToEndAsync(ctx.RequestAborted);
     await ths.ProcessWebhookUpdateAsync(body, ctx.RequestAborted);
-    return Results.Ok(new { ok = true });
+    return Results.Ok(new OkDto());
 }).RequireRateLimiting("webhook");
 
 app.Run();
@@ -162,55 +165,56 @@ static class ApiExtensions
                 return Results.Problem(statusCode: 409, title: "No active media session", detail: "No active media session", instance: ctx.Request.Path);
             var vol = await volume.GetVolumeAsync(ctx.RequestAborted);
             var mute = await volume.GetMuteAsync(ctx.RequestAborted);
-            return Results.Ok(new
+            var dto = new StateDto
             {
-                playback = st.Playback,
-                app = st.App,
-                title = st.Title,
-                artist = st.Artist,
-                album = st.Album,
-                position_ms = st.PositionMs,
-                duration_ms = st.DurationMs,
-                timestamp = DateTimeOffset.UtcNow,
-                volume = vol,
-                mute
-            });
+                Playback = st.Playback,
+                App = st.App,
+                Title = st.Title,
+                Artist = st.Artist,
+                Album = st.Album,
+                PositionMs = st.PositionMs,
+                DurationMs = st.DurationMs,
+                Timestamp = DateTimeOffset.UtcNow,
+                Volume = vol,
+                Mute = mute
+            };
+            return Results.Json(dto, AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         group.MapPost("/play", async (IMediaSessionService media, HttpContext ctx) =>
         {
             await media.PlayAsync(ctx.RequestAborted);
-            return Results.Ok(new { ok = true });
+            return Results.Json(new OkDto(), AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         group.MapPost("/pause", async (IMediaSessionService media, HttpContext ctx) =>
         {
             await media.PauseAsync(ctx.RequestAborted);
-            return Results.Ok(new { ok = true });
+            return Results.Json(new OkDto(), AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         group.MapPost("/toggle", async (IMediaSessionService media, HttpContext ctx) =>
         {
             await media.TogglePlayPauseAsync(ctx.RequestAborted);
-            return Results.Ok(new { ok = true });
+            return Results.Json(new OkDto(), AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         group.MapPost("/next", async (IMediaSessionService media, HttpContext ctx) =>
         {
             await media.NextAsync(ctx.RequestAborted);
-            return Results.Ok(new { ok = true });
+            return Results.Json(new OkDto(), AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         group.MapPost("/prev", async (IMediaSessionService media, HttpContext ctx) =>
         {
             await media.PreviousAsync(ctx.RequestAborted);
-            return Results.Ok(new { ok = true });
+            return Results.Json(new OkDto(), AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         group.MapPost("/stop", async (IMediaSessionService media, HttpContext ctx) =>
         {
             await media.StopPlaybackAsync(ctx.RequestAborted);
-            return Results.Ok(new { ok = true });
+            return Results.Json(new OkDto(), AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         group.MapPost("/volume/step", async (IVolumeService volume, HttpContext ctx) =>
@@ -220,7 +224,7 @@ static class ApiExtensions
             using var doc = JsonDocument.Parse(json);
             var delta = doc.RootElement.TryGetProperty("delta", out var v) ? v.GetDouble() : 0d;
             await volume.StepAsync((float)delta, ctx.RequestAborted);
-            return Results.Ok(new { ok = true });
+            return Results.Json(new OkDto(), AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         group.MapPost("/volume/set", async (IVolumeService volume, HttpContext ctx) =>
@@ -230,13 +234,13 @@ static class ApiExtensions
             using var doc = JsonDocument.Parse(json);
             var level = doc.RootElement.TryGetProperty("level", out var v) ? v.GetDouble() : 0d;
             await volume.SetAsync((float)level, ctx.RequestAborted);
-            return Results.Ok(new { ok = true });
+            return Results.Json(new OkDto(), AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         group.MapPost("/volume/mute", async (IVolumeService volume, HttpContext ctx) =>
         {
             await volume.ToggleMuteAsync(ctx.RequestAborted);
-            return Results.Ok(new { ok = true });
+            return Results.Json(new OkDto(), AppJsonContext.JsonOptions);
         }).RequireRateLimiting("api");
 
         return group;
